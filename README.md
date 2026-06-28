@@ -8,6 +8,9 @@ The shared library can be called from C or Python (`ctypes`).
 
 ---
 
+> **Note:** This project is a research work and assignment submitted to **Belgorod State Technological University named after V.G. Shukhov**.
+---
+
 ## Features
 
 | Feature | API |
