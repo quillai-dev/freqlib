@@ -1,0 +1,380 @@
+% sections/body.tex — Лаб. 10: Подготовка прикладной библиотеки
+\section*{Цель работы}
+
+Получить практические навыки проектирования, реализации, сборки,
+документирования и тестирования прикладной библиотеки на языке~C:
+научиться выделять публичный интерфейс, скрывать детали реализации,
+собирать разделяемую версию~\texttt{.so}, использовать её из~Python
+через \texttt{ctypes}, вести историю разработки в~git, применять
+Makefile, статические анализаторы и санитайзеры, а также подготавливать
+автоматическую документацию средствами Doxygen.
+
+\HRule
+
+\section*{Вариант~4 — Частотный анализ текста}
+
+Разработать библиотеку \textbf{freqlib} для частотного анализа
+ASCII-текста.  Предусмотреть:
+\begin{enumerate}
+    \item подсчёт частот символов ASCII;
+    \item подсчёт частот слов ограниченной длины;
+    \item поиск top-$k$ наиболее частых слов.
+\end{enumerate}
+
+\HRule
+
+\section*{1. Структура проекта}
+
+\begin{lstlisting}[style=Bashstyle]
+freqlib/
+ include/
+   freqlib.h         public API with Doxygen comments
+ src/
+   freqlib.c         library implementation
+   main.c            demo application
+ tests/
+   test_freqlib.c    C unit tests  (43 cases)
+   test_freqlib.py   Python ctypes tests  (22 cases)
+ docs/
+   Doxyfile          Doxygen configuration
+ reports/            static-analysis output  (.gitignore)
+ build/              compiled artifacts       (.gitignore)
+ Makefile
+ README.md
+ .gitignore
+\end{lstlisting}
+
+\HRule
+
+\section*{2. Публичный интерфейс библиотеки}
+
+\subsection*{2.1 Коды ошибок}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Константа & Значение \\
+\midrule
+\texttt{FREQ\_OK}~(0)       & Операция выполнена успешно \\
+\texttt{FREQ\_ERR\_NULL}~(-1)  & Передан \texttt{NULL}-указатель \\
+\texttt{FREQ\_ERR\_EMPTY}~(-2) & Пустая входная строка или нет слов \\
+\texttt{FREQ\_ERR\_ALLOC}~(-3) & Ошибка выделения памяти \\
+\texttt{FREQ\_ERR\_PARAM}~(-4) & Некорректное числовое значение \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{2.2 Типы данных}
+
+\begin{lstlisting}[style=Cstyle]
+/* Character frequency table (stack-allocated, no heap) */
+typedef struct {
+    size_t counts[128]; /* counts[c] == occurrences of ASCII char c */
+    size_t total;       /* total ASCII characters seen               */
+} char_freq_t;
+
+/* One word + its occurrence count */
+typedef struct {
+    char   word[64];    /* NUL-terminated, max 63 bytes              */
+    size_t count;
+} word_entry_t;
+
+/* Dynamic word-frequency table (heap-allocated entries) */
+typedef struct {
+    word_entry_t *entries;
+    size_t        size;   /* distinct words stored */
+    size_t        cap;    /* allocated capacity    */
+} word_freq_t;
+\end{lstlisting}
+
+\subsection*{2.3 Функции}
+
+\begin{lstlisting}[style=Cstyle]
+int  freq_char_count(const char *text, char_freq_t *out);
+void freq_char_free (char_freq_t *cf);
+
+int  freq_word_count(const char *text, word_freq_t *out);
+void freq_word_free (word_freq_t *wf);
+
+int  freq_top_k(const word_freq_t *wf, size_t k,
+                word_entry_t **result, size_t *result_n);
+\end{lstlisting}
+
+\subsection*{2.4 Правила владения памятью}
+
+\begin{itemize}
+    \item \texttt{freq\_char\_count} заполняет структуру на стеке вызывающего;
+          освобождение — \texttt{freq\_char\_free} (обнуляет поля).
+    \item \texttt{freq\_word\_count} выделяет \texttt{wf->entries} через
+          \texttt{malloc}/\texttt{realloc};
+          освобождение — \texttt{freq\_word\_free}.
+    \item \texttt{freq\_top\_k} выделяет новый массив результата;
+          вызывающая сторона освобождает его через \texttt{free()}.
+\end{itemize}
+
+\HRule
+
+\section*{3. Описание алгоритмов}
+
+\textbf{Подсчёт символов.}
+За один проход строки инкрементируется \texttt{counts[c]} для каждого
+символа~\texttt{c} со значением меньше~128.
+Сложность: $O(n)$, где $n$~--- длина строки.
+
+\textbf{Подсчёт слов.}
+Два указателя: пропуск не-алфавитно-цифровых символов,
+затем сбор «слова» (до~63~байт).
+Слово ищется в динамическом массиве линейным поиском;
+при совпадении счётчик инкрементируется,
+при отсутствии добавляется новая запись
+(ёмкость удваивается начиная с~16).
+Сложность: $O(m \cdot n)$ в худшем случае,
+где $m$~--- число слов, $n$~--- число различных слов.
+
+\textbf{Top-k.}
+Создаётся копия массива \texttt{entries}, сортируется по убыванию
+счётчика через \texttt{qsort} (при равенстве~--- по алфавиту),
+возвращаются первые $\min(k,\,|\textit{wf}|)$ элементов.
+Сложность: $O(n \log n)$.
+
+\HRule
+
+\section*{4. Фрагменты ключевых файлов}
+
+\subsection*{4.1 Заголовочный файл \texttt{include/freqlib.h} (фрагмент)}
+
+\begin{lstlisting}[style=Cstyle]
+#ifndef FREQLIB_H
+#define FREQLIB_H
+
+#include <stddef.h>
+
+#define FREQ_OK         0
+#define FREQ_ERR_NULL  -1
+#define FREQ_ERR_EMPTY -2
+#define FREQ_ERR_ALLOC -3
+#define FREQ_ERR_PARAM -4
+
+#define FREQ_ASCII_SIZE  128
+#define FREQ_WORD_MAXLEN  63
+
+typedef struct {
+    size_t counts[128];
+    size_t total;
+} char_freq_t;
+
+int  freq_char_count(const char *text, char_freq_t *out);
+void freq_char_free (char_freq_t *cf);
+
+/* word_freq_t, word_entry_t, freq_word_count,
+   freq_word_free, freq_top_k  ... */
+#endif
+\end{lstlisting}
+
+\subsection*{4.2 Реализация \texttt{freq\_word\_count} (ключевой фрагмент)}
+
+\begin{lstlisting}[style=Cstyle]
+const char *p = text;
+while (*p != '\0') {
+    while (*p != '\0' && !isalnum((unsigned char)*p)) p++;
+    if (*p == '\0') break;
+
+    char buf[FREQ_WORD_MAXLEN + 1];
+    size_t len = 0;
+    while (*p != '\0' && isalnum((unsigned char)*p)) {
+        if (len < FREQ_WORD_MAXLEN) buf[len++] = *p;
+        p++;
+    }
+    buf[len] = '\0';
+
+    int idx = wf_find(out, buf);
+    if (idx >= 0) {
+        out->entries[idx].count++;
+    } else {
+        if (out->size == out->cap) wf_grow(out);
+        memcpy(out->entries[out->size].word, buf, len + 1);
+        out->entries[out->size].count = 1;
+        out->size++;
+    }
+}
+\end{lstlisting}
+
+\subsection*{4.3 Makefile (фрагмент)}
+
+\begin{lstlisting}[style=Bashstyle]
+CC     := gcc
+CFLAGS := -Wall -Wextra -Wpedantic -std=c11 -Iinclude
+
+shared:
+    $(CC) $(CFLAGS) -O2 -fPIC -shared -o build/libfreqlib.so src/freqlib.c
+
+sanitize:
+    $(CC) $(CFLAGS) -g -fsanitize=address,undefined \
+          -o build/test_san tests/test_freqlib.c src/freqlib.c -Iinclude
+    build/test_san
+\end{lstlisting}
+
+\subsection*{4.4 Python-вызов через \texttt{ctypes} (фрагмент)}
+
+\begin{lstlisting}[style=Pystyle]
+import ctypes
+lib = ctypes.CDLL("build/libfreqlib.so")
+
+class CharFreq(ctypes.Structure):
+    _fields_ = [("counts", ctypes.c_size_t * 128),
+                ("total",  ctypes.c_size_t)]
+
+lib.freq_char_count.argtypes = [ctypes.c_char_p,
+                                  ctypes.POINTER(CharFreq)]
+lib.freq_char_count.restype  = ctypes.c_int
+
+cf = CharFreq()
+rc = lib.freq_char_count(b"hello world", ctypes.byref(cf))
+assert rc == 0
+assert cf.counts[ord('l')] == 3
+lib.freq_char_free(ctypes.byref(cf))
+\end{lstlisting}
+
+\HRule
+
+\section*{5. Команды сборки и результаты}
+
+\begin{lstlisting}[style=Bashstyle]
+$ make all
+[shared]  build/libfreqlib.so
+[app]     build/app
+43 passed, 0 failed
+Build complete.
+
+$ make run
+freqlib demo
+Character frequencies (printable ASCII, count > 0):
+  ' '    67
+  'e'    31   't'    28   'o'    27   's'    23
+  'a'    22   ...
+  total: 331
+Distinct words: 48
+Top 10 most frequent words:
+   1.  to                    7
+   2.  a                     3
+   3.  and                   3
+   4.  the                   3
+   5.  The                   2
+   ...
+Done.
+
+$ make syntax
+[syntax]  OK - no errors
+
+$ make sanitize
+43 passed, 0 failed   (AddressSanitizer + UBSan: clean)
+
+$ make py-test
+=== freqlib Python test suite ===
+22 passed, 0 failed
+
+$ make analyze
+--- gcc -fanalyzer ---   (no warnings)
+--- cppcheck ---         (no errors)
+
+$ make docs-html
+[docs]    docs/html/index.html
+\end{lstlisting}
+
+\HRule
+
+\section*{6. Таблица тестовых случаев}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.12}
+\small
+\begin{longtable}{p{4.2cm}|p{3.5cm}|p{3.2cm}|c}
+\toprule
+Входные данные & Функция & Ожидаемый результат & Итог \\
+\midrule
+\texttt{NULL} вместо текста      & \texttt{freq\_char\_count} & \texttt{FREQ\_ERR\_NULL}  & PASS \\
+\texttt{NULL} вместо \texttt{out}& \texttt{freq\_char\_count} & \texttt{FREQ\_ERR\_NULL}  & PASS \\
+Пустая строка \texttt{""}        & \texttt{freq\_char\_count} & \texttt{FREQ\_ERR\_EMPTY} & PASS \\
+\texttt{"aabbc"}                 & \texttt{freq\_char\_count} & counts: a=2, b=2, c=1    & PASS \\
+Один символ \texttt{"z"}         & \texttt{freq\_char\_count} & counts[z]=1, total=1      & PASS \\
+Три пробела \texttt{"   "}       & \texttt{freq\_char\_count} & counts[' ']=3, total=3    & PASS \\
+После \texttt{freq\_char\_free}  &                            & total = 0                 & PASS \\
+\texttt{NULL} вместо текста      & \texttt{freq\_word\_count} & \texttt{FREQ\_ERR\_NULL}  & PASS \\
+Пустая строка                    & \texttt{freq\_word\_count} & \texttt{FREQ\_ERR\_EMPTY} & PASS \\
+Только знаки \texttt{"!!! ???"}  & \texttt{freq\_word\_count} & \texttt{FREQ\_ERR\_EMPTY} & PASS \\
+\texttt{"the cat and the dog"}   & \texttt{freq\_word\_count} & size=4, the:2             & PASS \\
+Одно слово \texttt{"hello"}      & \texttt{freq\_word\_count} & size=1, count=1           & PASS \\
+Знаки препинания                 & \texttt{freq\_word\_count} & hello:2                   & PASS \\
+Слово 100 символов               & \texttt{freq\_word\_count} & обрезается до 63, OK      & PASS \\
+Три регистра одного слова        & \texttt{freq\_word\_count} & 3 разные записи           & PASS \\
+\texttt{k=0}                     & \texttt{freq\_top\_k}      & \texttt{FREQ\_ERR\_PARAM} & PASS \\
+\texttt{NULL} аргумент           & \texttt{freq\_top\_k}      & \texttt{FREQ\_ERR\_NULL}  & PASS \\
+\texttt{"a b a c a b"}, k=2      & \texttt{freq\_top\_k}      & [a:3, b:2]                & PASS \\
+$k >$ числа слов                 & \texttt{freq\_top\_k}      & все слова                 & PASS \\
+$k=1$                            & \texttt{freq\_top\_k}      & только «a»                & PASS \\
+Пустая таблица                   & \texttt{freq\_top\_k}      & resn=0, res=NULL          & PASS \\
+\bottomrule
+\multicolumn{4}{r}{\small Итого: \textbf{43} C-теста, \textbf{22} Python-теста --- все пройдены} \\
+\end{longtable}
+\end{center}
+
+\HRule
+
+\section*{7. История разработки (\texttt{git log --oneline})}
+
+\begin{lstlisting}[style=Bashstyle]
+8d2e082 docs: add changelog; note fix for no-word input edge case
+09b7b0c test(python): add ctypes integration tests with explicit argtypes/restype
+5c01477 test(c): add unit tests covering typical, boundary and error cases
+be225f6 build: add demo application and Makefile with all targets
+d504960 feat(src): implement freq_char_count, freq_word_count and freq_top_k
+e2aa5ae feat(include): add public header with types, error codes and Doxygen comments
+67cc512 init: scaffold project structure, .gitignore and README
+\end{lstlisting}
+
+\HRule
+
+\section*{8. Выводы}
+
+В ходе выполнения лабораторной работы~№\,10 реализована библиотека
+\textbf{freqlib} для частотного анализа ASCII-текста (вариант~4).
+
+\medskip
+\noindent\textbf{Реализовано:}
+\begin{itemize}
+    \item Публичный интерфейс в \texttt{include/freqlib.h}
+          с полными Doxygen-комментариями и единой схемой кодов ошибок.
+    \item Три функциональных группы API:
+          \texttt{freq\_char\_count}, \texttt{freq\_word\_count},
+          \texttt{freq\_top\_k}.
+    \item Разделяемая библиотека \texttt{libfreqlib.so}
+          (собирается с \texttt{-fPIC -shared}).
+    \item Демонстрационное приложение \texttt{src/main.c}.
+    \item \textbf{43} C-теста и \textbf{22} Python-теста через
+          \texttt{ctypes} --- все пройдены.
+    \item Makefile с~12~целями:
+          \texttt{all, shared, app, run, test, py-test,}
+          \texttt{syntax, analyze, sanitize, docs-html, docs-pdf, clean}.
+    \item История разработки в git: 7~осмысленных коммитов.
+\end{itemize}
+
+\medskip
+\noindent\textbf{Найденные ошибки и исправления:}
+\begin{itemize}
+    \item Изначально \texttt{freq\_word\_count} возвращала \texttt{FREQ\_OK}
+          для строк, не содержащих слов (например, \texttt{"!!! ???"}); 
+          исправлено --- теперь возвращается \texttt{FREQ\_ERR\_EMPTY}.
+    \item Статический анализ (\texttt{cppcheck}, \texttt{gcc~-fanalyzer})
+          и санитайзеры (ASan~+~UBSan) ошибок не выявили.
+\end{itemize}
+
+\medskip
+\noindent\textbf{Ограничения и возможные расширения:}
+\begin{itemize}
+    \item Поиск слова линейный $O(n)$ --- при больших текстах
+          можно заменить хеш-таблицей.
+    \item Сравнение слов чувствительно к регистру ---
+          можно добавить нечувствительный режим.
+    \item Максимальная длина слова фиксирована (63~байта) ---
+          можно сделать настраиваемой через параметр функции.
+\end{itemize}

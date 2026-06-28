@@ -1,0 +1,17 @@
+PROJECT_NAME           = "freqlib"
+PROJECT_BRIEF          = "Text frequency analysis library — ASCII character and word counting"
+PROJECT_NUMBER         = "1.0.0"
+OUTPUT_DIRECTORY       = .
+INPUT                  = ../include ../src
+RECURSIVE              = NO
+FILE_PATTERNS          = *.h *.c
+OPTIMIZE_OUTPUT_FOR_C  = YES
+EXTRACT_ALL            = YES
+JAVADOC_AUTOBRIEF      = YES
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_LATEX         = YES
+LATEX_OUTPUT           = latex
+GENERATE_MAN           = NO
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = YES

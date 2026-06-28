@@ -1,0 +1,23 @@
+# Build artifacts
+build/
+reports/
+
+# Generated documentation
+docs/html/
+docs/latex/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS artifacts
+.DS_Store
+.vscode/
+*.swp
+*.swo
+*~
+
+# Object files (in case of manual compilation)
+*.o
+*.a
